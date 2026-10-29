@@ -353,18 +353,31 @@ install_deferred_build_dependencies() {
   fi
 }
 
-# makepkg -s installs a recipe's missing depends, makedepends and checkdepends
-# with sudo, which a root run cannot hand to the builder user. Install them
-# here as root first, found the way makepkg finds them (pacman -T), so makepkg
-# -s has nothing left to install.
+# makepkg -s installs a recipe's missing depends, makedepends and, when it will
+# run check(), checkdepends with sudo, which a root run cannot hand to the
+# builder user. Install them here as root first, found the way makepkg finds
+# them (pacman -T), so makepkg -s has nothing left to install.
 install_missing_dependencies_as_root() {
   local pkg="$1"
   local -a deps=() missing=()
 
   mapfile -t deps < <(
     CARCH="$ARCH" bash -c '
+      conf=${MAKEPKG_CONF:-/etc/makepkg.conf}
+      for file in "$conf" "$conf".d/*.conf; do
+        [[ -f $file ]] && source "$file"
+      done
       source PKGBUILD
-      for kind in depends makedepends checkdepends; do
+      kinds=(depends makedepends)
+      # makepkg runs check() unless BUILDENV, then the recipe options, say !check.
+      run_check=y
+      [[ " ${BUILDENV[*]} " == *" !check "* ]] && run_check=n
+      [[ " ${options[*]} " == *" !check "* ]] && run_check=n
+      [[ " ${options[*]} " == *" check "* ]] && run_check=y
+      if declare -F check >/dev/null && [[ $run_check == y ]]; then
+        kinds+=(checkdepends)
+      fi
+      for kind in "${kinds[@]}"; do
         generic="${kind}[@]"
         specific="${kind}_${CARCH}[@]"
         printf "%s\n" "${!generic}" "${!specific}"
