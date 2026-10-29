@@ -41,16 +41,19 @@ mac-audio 1.0-1
 mac-new none
 EOF
 
-# minimal real packages via makepkg; +name is a provides, anything else a depends
-mkpkg() { # mkpkg <name> <pkgrel> <arch> [dep|+provide...]
-  local name=$1 rel=$2 arch=$3 d="$T/src/$1-$2-$3" item deps="" provs=""
+# minimal real packages via makepkg; +name is a provides, anything else a
+# depends; <name>@<pkgbase> builds it under another pkgbase
+mkpkg() { # mkpkg <name>[@pkgbase] <pkgrel> <arch> [dep|+provide...]
+  local name=${1%@*} base="" rel=$2 arch=$3 d="$T/src/$1-$2-$3" item deps="" provs=""
+  [[ $1 == *@* ]] && base=${1#*@}
   shift 3
   for item in "$@"; do
     if [[ $item == +* ]]; then provs+=" '${item#+}'"; else deps+=" '$item'"; fi
   done
   mkdir -p "$d"; cd "$d"
+  { [[ -z $base ]] || printf 'pkgbase=%s\n' "$base"
   printf 'pkgname=%s\npkgver=1.0\npkgrel=%s\narch=(%s)\ndepends=(%s)\nprovides=(%s)\npackage(){ install -Dm644 /dev/null "$pkgdir/usr/share/%s-%s"; }\n' \
-    "$name" "$rel" "$arch" "$deps" "$provs" "$name" "$rel" > PKGBUILD
+    "$name" "$rel" "$arch" "$deps" "$provs" "$name" "$rel"; } > PKGBUILD
   local carch=$arch; [[ $carch == any ]] && carch=x86_64
   if (( EUID == 0 )); then
     id -u fixture >/dev/null 2>&1 || useradd -m fixture
@@ -110,26 +113,26 @@ promote edge rc aarch64 alpha || fail "a promotion with no Mac change failed"
 
 # --- a version mismatch --------------------------------------------------------
 rc_before=$(entries rc aarch64)
-promote edge rc aarch64 --dry-run
+promote edge rc aarch64 --dry-run || true
 [[ $(mac_result) == refused && "$(names)" == "mac-kernel " ]] && says 'mac-kernel would be 1.0-2 in rc; the qualified Mac set has mac-kernel 1.0-1' \
   && grep -q 'mac-kernel would be 1.0-2' "$T/out" \
   && pass "a whole-channel promotion carrying an unqualified Mac version is refused, naming it" || fail "version mismatch"
-promote edge rc aarch64 --dry-run mac-kernel
+promote edge rc aarch64 --dry-run mac-kernel || true
 [[ $(mac_result) == refused && "$(names)" == "mac-kernel " ]] \
   && pass "an OPR -> RC promotion of the unqualified version alone is refused too" || fail "named version mismatch"
 
 pub edge x86_64 $(mkpkg mac-audio 2 any)
-promote edge rc x86_64 --dry-run
+promote edge rc x86_64 --dry-run || true
 [[ $(mac_result) == refused && "$(names)" == "mac-audio " ]] \
   && pass "the same rule refuses an unqualified arch=any Mac package on x86_64" || fail "x86_64 mismatch"
 
 # --- a pkgbase mismatch --------------------------------------------------------
 pub edge aarch64 $(mkpkg mac-new 1 aarch64)
-promote edge rc aarch64 --dry-run mac-new
+promote edge rc aarch64 --dry-run mac-new || true
 [[ $(mac_result) == refused && "$(names)" == "mac-new " ]] && says 'no qualified version' \
   && pass "a Mac pkgbase the inventory lists as none is refused" || fail "none pkgbase"
 # stable gets one Mac pkgbase of the set without the rest.
-promote rc stable aarch64 --dry-run mac-kernel
+promote rc stable aarch64 --dry-run mac-kernel || true
 [[ $(mac_result) == refused && "$(names)" == "mac-audio mac-boot " ]] && says 'stable/aarch64 would not have it' \
   && pass "moving part of the Mac set is refused, naming the pkgbases the channel would lack" || fail "partial set: $(names)"
 promote rc stable aarch64 --dry-run
@@ -139,7 +142,7 @@ promote rc stable aarch64 --dry-run
 # A shared package the Mac set depends on moves to a version that no longer
 # provides what a Mac package needs. No Mac package moves.
 pub edge aarch64 $(mkpkg shared-lib 2 aarch64 +libshared.so=2)
-promote edge rc aarch64 --dry-run shared-lib
+promote edge rc aarch64 --dry-run shared-lib || true
 [[ $(mac_result) == refused && "$(names)" == "mac-boot " ]] \
   && says 'mac-boot needs libshared.so=1; rc would offer only libshared.so=2 \(from shared-lib\)' \
   && jq -e 'select(.type=="mac-set") | .moved == []' "$T/record" >/dev/null \
@@ -148,7 +151,7 @@ promote edge rc aarch64 --dry-run shared-lib
 # --- fast-ring publication -----------------------------------------------------
 FAST2=$(mkpkg fast-tool 2 aarch64 +tool-api=2)
 pub edge aarch64 "$FAST2"
-promote edge rc aarch64 --fast-ring --dry-run
+promote edge rc aarch64 --fast-ring --dry-run || true
 [[ $(mac_result) == refused && "$(names)" == "mac-boot " ]] && says 'needs tool-api=1' \
   && pass "a fast-ring promotion that breaks the closure is refused" || fail "fast-ring promotion"
 
@@ -164,6 +167,36 @@ fi
 : > "$T/record"
 "$BIN/check-mac-set" --remote "$REMOTE" --channel rc --arch aarch64 --record "$T/record" --add $(mkpkg fast-tool 3 aarch64 +tool-api=1) >"$T/out" 2>&1 \
   && [[ $(mac_result) == pass ]] && pass "a fast-ring publish that keeps the closure resolving passes" || fail "fast-ring pass"
+
+# The merge publish checks every rc and stable slot before any publishes, as
+# publish.yml does: an aarch64 refusal leaves x86_64 as it was too.
+X86_ALPHA=$(mkpkg alpha 7 x86_64)
+printf 'rc x86_64 %s\nrc aarch64 %s\n' "$X86_ALPHA" "$FAST2" > "$T/slots"
+x86_before=$(entries rc x86_64) arm_before=$(entries rc aarch64)
+: > "$T/record"
+if "$BIN/check-mac-set" --remote "$REMOTE" --slots "$T/slots" --record "$T/record" >"$T/out" 2>&1; then
+  pub rc x86_64 "$X86_ALPHA"; pub rc aarch64 "$FAST2"
+  fail "a publish with one refused slot should refuse"
+fi
+[[ "$(jq -r 'select(.type=="mac-set") | .arch + ":" + .result' "$T/record" | tr '\n' ' ')" == "x86_64:untouched aarch64:refused " ]] \
+  && [[ "$(entries rc x86_64)" == "$x86_before" && "$(entries rc aarch64)" == "$arm_before" ]] \
+  && pass "a merge publish is checked slot by slot before anything publishes; one refusal publishes nothing" || fail "slots: $(cat "$T/record")"
+printf 'rc x86_64 %s\n' "$X86_ALPHA" > "$T/slots"
+"$BIN/check-mac-set" --remote "$REMOTE" --slots "$T/slots" >"$T/out" 2>&1 \
+  && pass "a merge publish whose slots all pass is cleared" || fail "slots pass"
+
+# --- a pkgbase renamed away from the Mac set ------------------------------------
+# mac-audio rebuilt under a pkgbase the inventory does not list is still a
+# Mac package: the old pkgbase classifies it.
+: > "$T/record"
+if "$BIN/check-mac-set" --remote "$REMOTE" --channel rc --arch aarch64 --record "$T/record" \
+  --add $(mkpkg mac-audio@audio-renamed 2 aarch64) >"$T/out" 2>&1; then
+  fail "a Mac package moving to an unlisted pkgbase should refuse"
+fi
+[[ $(mac_result) == refused && "$(names)" == "mac-audio " ]] \
+  && says 'mac-audio would move from Mac pkgbase mac-audio to audio-renamed' \
+  && jq -e 'select(.type=="mac-set") | .moved == ["mac-audio"]' "$T/record" >/dev/null \
+  && pass "a Mac package rebuilt under an unlisted pkgbase is still checked, and refused" || fail "renamed pkgbase: $(cat "$T/record")"
 
 # --- the inventory itself ------------------------------------------------------
 cp "$T/root/release/mac-inventory.txt" "$T/inventory"
@@ -190,30 +223,37 @@ else
   [[ $? == 2 ]] && grep -q 'Cannot list' "$T/out" && pass "an unreadable channel fails closed instead of reading as empty" || fail "unreadable remote"
 fi
 
-# --- report only, for now -------------------------------------------------------
-# Promotions report the check and still publish until refusing is agreed.
-promote edge rc aarch64 mac-kernel || fail "a reported mismatch should not stop the promotion"
-[[ $(mac_result) == refused && "$(entries rc aarch64)" == *"mac-kernel-1.0-2 "* ]] \
-  && grep -q 'promotions only report it for now' "$T/out" \
-  && pass "a promotion the check would refuse is reported and still published" || fail "report only: $(entries rc aarch64)"
+# --- refusing ----------------------------------------------------------------
+# A refused check stops the promotion before anything publishes, dry run
+# included; the destination stays as it was.
+rc_before=$(entries rc aarch64)
+if promote edge rc aarch64 mac-kernel; then fail "a mismatched promotion should refuse"; fi
+[[ $(mac_result) == refused && "$(entries rc aarch64)" == "$rc_before" ]] \
+  && grep -q 'Refusing to promote edge/aarch64 into rc/aarch64: nothing published' "$T/out" \
+  && ! jq -e 'select(.type == "slot")' "$T/record" >/dev/null \
+  && pass "a promotion the check refuses publishes nothing" || fail "refusal: $(entries rc aarch64)"
+if promote edge rc aarch64 --dry-run shared-lib; then fail "a dry run of a refused plan should fail"; fi
+pass "a dry run of a refused plan fails, so the workflow can check every architecture first"
+if promote edge rc aarch64 --fast-ring; then fail "a refused fast-ring promotion should fail"; fi
+[[ "$(entries rc aarch64)" == "$rc_before" ]] && pass "a refused fast-ring promotion publishes nothing" || fail "fast-ring refusal"
 
-# Nor does a failure of the check itself: building the view the plan would
-# leave, or running check-mac-set.
+# A failure of the check itself refuses too: building the view the plan
+# would leave, or running check-mac-set.
 pub edge aarch64 $(mkpkg alpha 5 aarch64)
 db="$REMOTE/edge/aarch64/omarchy.db.tar.zst"
 cp "$db" "$T/edge.db"
 mkdir "$T/edge.d" && bsdtar -xf "$db" -C "$T/edge.d"
 mv "$T/edge.d/alpha-1.0-5" "$T/edge.d/alpha-entry"
 (cd "$T/edge.d" && bsdtar --zstd -cf "$db" *)
-promote edge rc aarch64 alpha || fail "a failure building the Mac view should not stop a report-only promotion"
-grep -q 'the Mac package set was not checked' "$T/out" && [[ "$(entries rc aarch64)" == *"alpha-1.0-5 "* ]] \
-  && pass "a failure building the view the plan would leave is a warning, and the promotion still publishes" || fail "view failure: $(entries rc aarch64)"
+rc_before=$(entries rc aarch64)
+if promote edge rc aarch64 alpha; then fail "a failure building the Mac view should refuse"; fi
+grep -q 'Could not build rc/aarch64 as this plan would leave it; refusing' "$T/out" && [[ "$(entries rc aarch64)" == "$rc_before" ]] \
+  && pass "a failure building the view the plan would leave refuses and publishes nothing" || fail "view failure: $(entries rc aarch64)"
 cp "$T/edge.db" "$db"
 
 cp "$BIN/check-mac-set" "$T/check-mac-set"
 printf '#!/bin/bash\nexit 7\n' > "$BIN/check-mac-set"
-pub edge aarch64 $(mkpkg alpha 6 aarch64)
-promote edge rc aarch64 alpha || fail "a crashing check should not stop a report-only promotion"
-grep -q 'or could not run' "$T/out" && [[ "$(entries rc aarch64)" == *"alpha-1.0-6 "* ]] \
-  && pass "a check that cannot run is a warning, and the promotion still publishes" || fail "check crash: $(entries rc aarch64)"
+if promote edge rc aarch64 alpha; then fail "a crashing check should refuse"; fi
+grep -q 'Refusing to promote edge/aarch64 into rc/aarch64: nothing published' "$T/out" && [[ "$(entries rc aarch64)" == "$rc_before" ]] \
+  && pass "a check that cannot run refuses and publishes nothing" || fail "check crash: $(entries rc aarch64)"
 cp "$T/check-mac-set" "$BIN/check-mac-set"
