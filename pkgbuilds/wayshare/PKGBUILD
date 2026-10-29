@@ -3,10 +3,11 @@
 pkgname=wayshare
 pkgver=0.3.0
 pkgrel=1
-pkgdesc='macOS Screen Sharing server for Hyprland'
+pkgdesc='Screen sharing server for Hyprland with macOS and RDP support'
 arch=('x86_64' 'aarch64')
 url='https://github.com/wesleygrimes/wayshare'
 license=('Apache-2.0')
+install=wayshare.install
 options=('!debug' '!lto')
 depends=(
   'gcc-libs'
@@ -14,10 +15,11 @@ depends=(
   'hyprland>=0.56'
   'libglvnd'
   'mesa'
+  'zlib'
 )
 makedepends=('cargo' 'pkgconf')
 # Loaded with dlopen at runtime; High Performance mode needs one encoder.
-optdepends=('libva: HEVC encoding through VA-API'
+optdepends=('libva: RDP H.264 and High Performance HEVC encoding through VA-API'
             'x265: software HEVC encoding when VA-API is unavailable'
             'libfdk-aac: High Performance audio'
             'libpulse: High Performance audio capture')
@@ -53,4 +55,5 @@ package() {
   install -Dm644 contrib/config.example.toml "$pkgdir/usr/share/doc/$pkgname/config.example.toml"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 THIRD-PARTY-LICENSES "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY-LICENSES"
 }
