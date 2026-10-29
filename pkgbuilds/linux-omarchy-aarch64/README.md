@@ -17,6 +17,8 @@ and product; BestPerf and the rest of power_wrap remain enabled. Other GB10
 products have not been tested, and the firmware reset mechanism is still
 unknown.
 
+`1041`, from `7.3-6`, backports the missing-IRQ handling from [Nicolin Chen's SMMUv3 PRI proposal](https://lists.openwall.net/linux-kernel/2026/09/15/2458) (v5 09/15). It clears PRI when the dedicated interrupt is missing, either interrupt request fails, or the kernel is a crash kernel, and the final CR0 write disables a queue that has no handler. GB10 machines hit this: DGX OS logs `arm-smmu-v3.2.auto: no priq irq - PRI will be broken` on a DGX Spark, and the Dell Pro Max with GB10 shows the same on SMMU instance 2, separate from the GPU, NVMe and network controllers. It does not enable endpoint PRI or change `1040`'s GPU DMA-domain selection, and 7.3 lacks the proposal's IRQ bookkeeping changes, so it keeps the existing teardown conventions. This is defensive correctness work; no inference failure has been attributed to it.
+
 ## N1x patches
 
 Patches 1000–1040 are NVIDIA's SAUCE from `Ubuntu-nvidia-7.0-7.0.0-1021.21_24.04.1` (commit `dd99802c8b0c384169bb36293c9517fa67238e47`), rebased onto 7.3 with Omarchy's patches applied and grouped by topic:
