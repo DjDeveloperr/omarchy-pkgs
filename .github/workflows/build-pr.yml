@@ -109,7 +109,9 @@ jobs:
                   if git cat-file -e "${{ github.event.pull_request.head.sha }}:pkgbuilds/$name" 2>/dev/null; then echo "$name"; fi
                 done)
           fi
+          t_matrix=$EPOCHREALTIME
           matrix=$(printf '%s\n' $names | bin/build-matrix)
+          echo "PROFILE build-matrix $(( (${EPOCHREALTIME/./} - ${t_matrix/./}) / 1000 )) ms" 
           # A package directory whose exact tree already has a build artifact
           # (label <pkg>-<arch>-<tree hash>, uploaded only after a successful
           # build) is not built again. Pushing a fix for one package to a PR
@@ -144,7 +146,10 @@ jobs:
             mapfile -t packages < <(jq -r --arg arch "$arch" '.include[] | select(.arch == $arch) | .package' <<<"$matrix")
             # Naming the engine skips the docker info probe that sourcing
             # bin/build's helpers otherwise runs: 376 ms, for no container.
-            plan=$(CONTAINER_ENGINE=docker bin/build --dry-run --mirror edge --arch "$arch" --package "${packages[@]}" 2>&1 | grep -E '^==> Plan complete' || true)
+            t_plan=$EPOCHREALTIME
+            plan=$(CONTAINER_ENGINE=docker BASH_ENV="$PWD/ci/ps4.sh" env SHELLOPTS=xtrace bin/build --dry-run --mirror edge --arch "$arch" --package "${packages[@]}" 2>"$RUNNER_TEMP/trace-$arch.txt" | grep -E '^==> Plan complete' || true)
+            echo "PROFILE dry-run $arch $(( (${EPOCHREALTIME/./} - ${t_plan/./}) / 1000 )) ms"
+            python3 ci/profile-trace.py "$RUNNER_TEMP/trace-$arch.txt"
             if [[ -n "$plan" ]]; then
               planned[$arch]=" $(sed -E 's/.*would build: *//' <<<"$plan") "
             else
@@ -178,6 +183,7 @@ jobs:
             printf '==> edge already holds this version, nothing to build: %s\n' "${held[@]}"
             { echo "Already on edge, not built (${#held[@]}):"; printf -- '- %s\n' "${held[@]}"; } >> "$GITHUB_STEP_SUMMARY"
           fi
+          echo "PROFILE curl timings from this runner:"; for u in https://pkgs.omarchy.org/edge/x86_64/omarchy.db.tar.zst https://pkgs.omarchy.org/edge/x86_64/asdcontrol-1:0.6.0-9-x86_64.pkg.tar.zst; do for i in 1 2 3; do curl -sI -o /dev/null -w "PROFILE   %{http_code} dns %{time_namelookup} tls %{time_appconnect} ttfb %{time_starttransfer} $u\n" "$u"; done; done; curl -s -o /dev/null -D - https://pkgs.omarchy.org/cdn-cgi/trace 2>/dev/null | head -0; curl -s https://pkgs.omarchy.org/cdn-cgi/trace | grep -E '^colo=' | sed 's/^/PROFILE   /'
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "planned=$(jq '.include | length' <<<"$matrix")" >> "$GITHUB_OUTPUT"
           jq -r '.include[] | "\(.package) \(.arch) -> \(.channels)"' <<<"$matrix"
