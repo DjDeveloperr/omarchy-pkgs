@@ -356,25 +356,22 @@ install_deferred_build_dependencies() {
 # makepkg -s installs a recipe's missing depends, makedepends and, when it will
 # run check(), checkdepends with sudo, which a root run cannot hand to the
 # builder user. Install them here as root first, found the way makepkg finds
-# them (pacman -T), so makepkg -s has nothing left to install.
+# them (pacman -T), so makepkg -s has nothing left to install. Whether check()
+# runs is makepkg's own decision (CHECKFUNC), made here with its own functions
+# and the configuration it will read as builder.
 install_missing_dependencies_as_root() {
   local pkg="$1"
   local -a deps=() missing=()
 
   mapfile -t deps < <(
-    CARCH="$ARCH" bash -c '
-      conf=${MAKEPKG_CONF:-/etc/makepkg.conf}
-      for file in "$conf" "$conf".d/*.conf; do
-        [[ -f $file ]] && source "$file"
-      done
+    as_builder env CARCH="$ARCH" bash -c '
+      library=${MAKEPKG_LIBRARY:-/usr/share/makepkg}
+      source "$library/util/config.sh"
+      source "$library/util/option.sh"
+      load_makepkg_config
       source PKGBUILD
       kinds=(depends makedepends)
-      # makepkg runs check() unless BUILDENV, then the recipe options, say !check.
-      run_check=y
-      [[ " ${BUILDENV[*]} " == *" !check "* ]] && run_check=n
-      [[ " ${options[*]} " == *" !check "* ]] && run_check=n
-      [[ " ${options[*]} " == *" check "* ]] && run_check=y
-      if declare -F check >/dev/null && [[ $run_check == y ]]; then
+      if declare -f check >/dev/null && ! check_buildenv check n; then
         kinds+=(checkdepends)
       fi
       for kind in "${kinds[@]}"; do
